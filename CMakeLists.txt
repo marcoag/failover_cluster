@@ -31,43 +31,44 @@ include_directories(
   ${rclcpp_lifecycle_INCLUDE_DIRS}
   ${rclcpp_INCLUDE_DIRS})
 
-# find_package(<dependency> REQUIRED)
-
-add_library(talker_component SHARED
-  src/talker_component.cpp)
-target_compile_definitions(talker_component
+add_library(lifecycle_watchdog SHARED
+  src/lifecycle_watchdog.cpp)
+target_compile_definitions(lifecycle_watchdog
   PRIVATE "COMPOSITION_BUILDING_DLL")
-ament_target_dependencies(talker_component
-  "rclcpp"
-  "rclcpp_components"
-  "std_msgs")
-rclcpp_components_register_nodes(talker_component "composition::Talker")
-set(node_plugins "${node_plugins}composition::Talker;$<TARGET_FILE:talker_component>\n")
-
-add_library(heartbeat_component SHARED
-  src/simple_heartbeat.cpp)
-target_compile_definitions(heartbeat_component
-  PRIVATE "COMPOSITION_BUILDING_DLL")
-ament_target_dependencies(heartbeat_component
-  "rclcpp"
-  "rclcpp_components"
-  "std_msgs"
-  "sw_watchdog_msgs")
-rclcpp_components_register_nodes(heartbeat_component "simple_heartbeat::SimpleHeartbeat")
-set(node_plugins "${node_plugins}simple_heartbeat::SimpleHeartbeat;$<TARGET_FILE:heartbeat_component>\n")
-
-add_library(watchdog_component SHARED
-  src/simple_watchdog.cpp)
-target_compile_definitions(watchdog_component
-  PRIVATE "COMPOSITION_BUILDING_DLL")
-ament_target_dependencies(watchdog_component
+ament_target_dependencies(lifecycle_watchdog
   "rclcpp"
   "rclcpp_components"
   "std_msgs"
   "sw_watchdog_msgs"
   "rclcpp_lifecycle")
-rclcpp_components_register_nodes(heartbeat_component "simple_watchdog::SimpleWatchdog")
-set(node_plugins "${node_plugins}simple_watchdog::SimpleWatchdog;$<TARGET_FILE:watchdog_component>\n")
+rclcpp_components_register_nodes(lifecycle_watchdog "lifecycle_watchdog::LifecycleWatchdog")
+set(node_plugins "${node_plugins}lifecycle_watchdog::LifecycleWatchdog;$<TARGET_FILE:lifecycle_watchdog>\n")
+
+add_library(lifecycle_heartbeat SHARED
+  src/lifecycle_heartbeat.cpp)
+target_compile_definitions(lifecycle_heartbeat
+  PRIVATE "COMPOSITION_BUILDING_DLL")
+ament_target_dependencies(lifecycle_heartbeat
+  "rclcpp"
+  "rclcpp_components"
+  "std_msgs"
+  "sw_watchdog_msgs"
+  "rclcpp_lifecycle")
+rclcpp_components_register_nodes(lifecycle_heartbeat "lifecycle_heartbeat::LifecycleHeartbeat")
+set(node_plugins "${node_plugins}lifecycle_heartbeat::LifecycleHeartbeat;$<TARGET_FILE:lifecycle_heartbeat>\n")
+
+add_library(lifecycle_talker SHARED
+  src/lifecycle_talker.cpp)
+target_compile_definitions(lifecycle_talker
+  PRIVATE "COMPOSITION_BUILDING_DLL")
+ament_target_dependencies(lifecycle_talker
+  "rclcpp"
+  "rclcpp_components"
+  "std_msgs"
+  "rclcpp_lifecycle"
+  "sw_watchdog_msgs")
+rclcpp_components_register_nodes(lifecycle_talker "lifecycle_talker::LifecycleTalker")
+set(node_plugins "${node_plugins}lifecycle_talker::LifecycleTalker;$<TARGET_FILE:lifecycle_talker>\n")
 
 # since the package installs libraries without exporting them
 # it needs to make sure that the library path is being exported
@@ -76,21 +77,13 @@ if(NOT WIN32)
     "${ament_cmake_package_templates_ENVIRONMENT_HOOK_LIBRARY_PATH}")
 endif()
 
-add_executable(manual_composition
-  src/manual_composition.cpp)
-target_link_libraries(manual_composition
-  talker_component
-  heartbeat_component)
-ament_target_dependencies(manual_composition
-  "rclcpp")
-
 add_executable(linktime_composition
   src/linktime_composition.cpp)
 
 set(libs
-  talker_component
-  heartbeat_component
-  watchdog_component)
+  lifecycle_talker
+  lifecycle_heartbeat
+  lifecycle_watchdog)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
   set(libs
     "-Wl,--no-as-needed"
@@ -105,18 +98,20 @@ ament_target_dependencies(linktime_composition
   "rclcpp_components")
 
 install(TARGETS
-  talker_component
-  heartbeat_component
-  watchdog_component
+  lifecycle_watchdog
+  lifecycle_heartbeat
+  lifecycle_talker
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
-  RUNTIME DESTINATION bin
-)
+  RUNTIME DESTINATION bin)
 
 install(TARGETS
-  manual_composition
   linktime_composition
   DESTINATION lib/${PROJECT_NAME})
+  
+install(DIRECTORY
+  launch
+  DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)

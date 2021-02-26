@@ -12,20 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "fail_demo/simple_watchdog.hpp"
+#include "fail_demo/lifecycle_watchdog.hpp"
 
 using namespace std::chrono_literals;
 
 constexpr char OPTION_AUTO_START[] = "--activate";
 constexpr char OPTION_PUB_STATUS[] = "--publish";
-constexpr char DEFAULT_TOPIC_NAME[] = "heartbeat_1";
+constexpr char DEFAULT_TOPIC_NAME[] = "heartbeat";
 
 namespace {
 
 void print_usage()
 {
     std::cout <<
-        "Usage: simple_watchdog lease [" << OPTION_AUTO_START << "] [-h]\n\n"
+        "Usage: lifecycle_watchdog lease [" << OPTION_AUTO_START << "] [-h]\n\n"
         "required arguments:\n"
         "\tlease: Lease in positive integer milliseconds granted to the watched entity.\n"
         "optional arguments:\n"
@@ -38,50 +38,42 @@ void print_usage()
 
 } // anonymous ns
 
-namespace simple_watchdog
+namespace lifecycle_watchdog
 {
 
-/// SimpleWatchdog inheriting from rclcpp_lifecycle::LifecycleNode
+/// LifecycleWatchdog inheriting from rclcpp_lifecycle::LifecycleNode
 /**
  * Internally relies on the QoS liveliness policy provided by rmw implementation (e.g., DDS).
  * The lease passed to this watchdog has to be > the period of the heartbeat signal to account
  * for network transmission times.
  */
-SimpleWatchdog::SimpleWatchdog(const rclcpp::NodeOptions& options)
-    : rclcpp_lifecycle::LifecycleNode("simple_watchdog", options),
-        autostart_(false), enable_pub_(false), topic_name_(DEFAULT_TOPIC_NAME), qos_profile_(10)
+LifecycleWatchdog::LifecycleWatchdog(const rclcpp::NodeOptions& options)
+    : rclcpp_lifecycle::LifecycleNode("lifecycle_watchdog", options),
+        active_node_(false), enable_pub_(true), topic_name_(DEFAULT_TOPIC_NAME), qos_profile_(10)
 {
-    // Parse node arguments
-    const std::vector<std::string>& args = this->get_node_options().arguments();
-    std::vector<char *> cargs;
-    cargs.reserve(args.size());
-    for(size_t i = 0; i < args.size(); ++i)
-        cargs.push_back(const_cast<char*>(args[i].c_str()));
-
-//    if(args.size() < 2 || rcutils_cli_option_exist(&cargs[0], &cargs[0] + cargs.size(), "-h")) {
-//        print_usage();
-        // TODO: Update the rclcpp_components template to be able to handle
-        // exceptions. Raise one here, so stack unwinding happens gracefully.
-//        std::exit(0);
-//    }
+    
+    declare_parameter("watchdog_period");
+    declare_parameter("active_node");
 
     // Lease duration must be >= heartbeat's lease duration
-    //lease_duration_ = std::chrono::milliseconds(std::stoul(args[1]));
-    lease_duration_ = std::chrono::milliseconds(220);
+    try {
+        lease_duration_ = std::chrono::milliseconds(get_parameter("watchdog_period").as_int());
+        active_node_ = get_parameter("active_node").as_bool();
+    } catch (...) {
+        print_usage();
+        // TODO: Update the rclcpp_components template to be able to handle
+        // exceptions. Raise one here, so stack unwinding happens gracefully.
+        std::exit(-1);
+    }
 
-//        if(rcutils_cli_option_exist(&cargs[0], &cargs[0] + cargs.size(), OPTION_AUTO_START))
-        autostart_ = true;
-//        if(rcutils_cli_option_exist(&cargs[0], &cargs[0] + cargs.size(), OPTION_PUB_STATUS))
-        enable_pub_ = true;
-
-    if(autostart_) {
+    if(!active_node_) {
         configure();
         activate();
     }
 }
 
 /// Publish lease expiry of the watched entity
-void SimpleWatchdog::publish_status()
+void LifecycleWatchdog::publish_status()
 {
     auto msg = std::make_unique<sw_watchdog_msgs::msg::Status>();
     rclcpp::Time now = this->get_clock()->now();
@@ -104,7 +96,7 @@ void SimpleWatchdog::publish_status()
 }
 
     /// Transition callback for state configuring
-rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn SimpleWatchdog::on_configure(
+rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn LifecycleWatchdog::on_configure(
     const rclcpp_lifecycle::State &)
 {
     // Initialize and configure node
@@ -123,6 +115,7 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn Simple
                 publish_status();
                 // Transition lifecycle to deactivated state
                 deactivate();
+                // Activate talker and heartbeat
             }
         };
 
@@ -134,7 +127,7 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn Simple
 }
 
 /// Transition callback for state activating
-rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn SimpleWatchdog::on_activate(
+rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn LifecycleWatchdog::on_activate(
     const rclcpp_lifecycle::State &)
 {
     if(!heartbeat_sub_) {
@@ -157,7 +150,7 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn Simple
 }
 
 /// Transition callback for state deactivating
-rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn SimpleWatchdog::on_deactivate(
+rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn LifecycleWatchdog::on_deactivate(
     const rclcpp_lifecycle::State &)
 {
     heartbeat_sub_.reset(); // XXX there does not seem to be a 'deactivate' for subscribers.
@@ -173,7 +166,7 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn Simple
 }
 
 /// Transition callback for state cleaningup
-rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn SimpleWatchdog::on_cleanup(
+rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn LifecycleWatchdog::on_cleanup(
     const rclcpp_lifecycle::State &)
 {
     status_pub_.reset();
@@ -183,7 +176,7 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn Simple
 }
 
 /// Transition callback for state shutting down
-rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn SimpleWatchdog::on_shutdown(
+rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn LifecycleWatchdog::on_shutdown(
     const rclcpp_lifecycle::State &state)
 {
     heartbeat_sub_.reset();
@@ -197,4 +190,4 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn Simple
 
 } // namespace sw_watchdog
 
-RCLCPP_COMPONENTS_REGISTER_NODE(simple_watchdog::SimpleWatchdog)
+RCLCPP_COMPONENTS_REGISTER_NODE(lifecycle_watchdog::LifecycleWatchdog)
