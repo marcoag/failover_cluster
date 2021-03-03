@@ -19,6 +19,7 @@ using namespace std::chrono_literals;
 constexpr char OPTION_AUTO_START[] = "--activate";
 constexpr char OPTION_PUB_STATUS[] = "--publish";
 constexpr char DEFAULT_TOPIC_NAME[] = "heartbeat";
+constexpr char DEFAULT_WATCHDOGS_HB_TOPIC_NAME[] = "watchdogs_heartbeat";
 
 namespace {
 
@@ -49,7 +50,8 @@ namespace lifecycle_watchdog
  */
 LifecycleWatchdog::LifecycleWatchdog(const rclcpp::NodeOptions& options)
     : rclcpp_lifecycle::LifecycleNode("lifecycle_watchdog", options),
-        active_node_(false), enable_pub_(true), topic_name_(DEFAULT_TOPIC_NAME), qos_profile_(10)
+        active_node_(false), enable_pub_(true), hb_topic_name_(DEFAULT_TOPIC_NAME), 
+        watchdogs_hb_topic_name_(DEFAULT_WATCHDOGS_HB_TOPIC_NAME), qos_profile_(10)
 {
     
     declare_parameter("watchdog_period");
@@ -65,11 +67,10 @@ LifecycleWatchdog::LifecycleWatchdog(const rclcpp::NodeOptions& options)
         // exceptions. Raise one here, so stack unwinding happens gracefully.
         std::exit(-1);
     }
-
-    if(!active_node_) {
-        configure();
-        activate();
-    }
+    
+    configure();
+    activate();
+    
 }
 
 /// Publish lease expiry of the watched entity
@@ -88,39 +89,48 @@ void LifecycleWatchdog::publish_status()
         RCLCPP_INFO(get_logger(),
                     "Publishing lease expiry (missed count: %u) at [%f]",
                     msg->missed_number, now.seconds());
+        status_pub_->publish(std::move(msg));
     }
 
     // Only if the publisher is in an active state, the message transfer is
     // enabled and the message actually published.
-    status_pub_->publish(std::move(msg));
 }
+
+void LifecycleWatchdog::hb_missing_callback(rclcpp::QOSLivelinessChangedInfo &event)
+{
+                 printf("Reader Liveliness changed event: \n");
+//             printf("  alive_count: %d\n", event.alive_count);
+//             printf("  not_alive_count: %d\n", event.not_alive_count);
+//             printf("  alive_count_change: %d\n", event.alive_count_change);
+//             printf("  not_alive_count_change: %d\n", event.not_alive_count_change);
+            if(event.alive_count == 0) {
+                publish_status();
+                // Transition lifecycle to deactivated state
+//                RCUTILS_LOG_INFO_NAMED(get_name(), "calling for deactivate, cleanup, configure, activate");
+                deactivate();
+                /*cleanup()*/;
+                active_node_=!active_node_;
+//                 configure();
+                activate();
+            }
+}
+
+using std::placeholders::_1;
 
     /// Transition callback for state configuring
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn LifecycleWatchdog::on_configure(
     const rclcpp_lifecycle::State &)
-{
+{    
     // Initialize and configure node
     qos_profile_
         .liveliness(RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC)
         .liveliness_lease_duration(lease_duration_);
+        
+    heartbeat_sub_options_.event_callbacks.liveliness_callback = 
+    std::bind(&LifecycleWatchdog::hb_missing_callback, this, _1);
+            
 
-    heartbeat_sub_options_.event_callbacks.liveliness_callback =
-        [this](rclcpp::QOSLivelinessChangedInfo &event) -> void {
-            printf("Reader Liveliness changed event: \n");
-            printf("  alive_count: %d\n", event.alive_count);
-            printf("  not_alive_count: %d\n", event.not_alive_count);
-            printf("  alive_count_change: %d\n", event.alive_count_change);
-            printf("  not_alive_count_change: %d\n", event.not_alive_count_change);
-            if(event.alive_count == 0) {
-                publish_status();
-                // Transition lifecycle to deactivated state
-                deactivate();
-                // Activate talker and heartbeat
-            }
-        };
-
-    if(enable_pub_)
-        status_pub_ = create_publisher<sw_watchdog_msgs::msg::Status>("status", 1); /* QoS history_depth */
+    status_pub_ = create_publisher<sw_watchdog_msgs::msg::Status>("status_hd", 10);
 
     RCUTILS_LOG_INFO_NAMED(get_name(), "on_configure() is called.");
     return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
@@ -130,19 +140,32 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn Lifecy
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn LifecycleWatchdog::on_activate(
     const rclcpp_lifecycle::State &)
 {
-    if(!heartbeat_sub_) {
-        heartbeat_sub_ = create_subscription<sw_watchdog_msgs::msg::Heartbeat>(
-            topic_name_,
-            qos_profile_,
-            [this](const typename sw_watchdog_msgs::msg::Heartbeat::SharedPtr msg) -> void {
-                RCLCPP_INFO(get_logger(), "Watchdog raised, heartbeat sent at [%d.x]", msg->stamp.sec);
-            },
-            heartbeat_sub_options_);
+    if(!active_node_){
+        if(!heartbeat_sub_) {
+            heartbeat_sub_ = create_subscription<sw_watchdog_msgs::msg::Heartbeat>(
+                hb_topic_name_,
+                qos_profile_,
+                [this](const typename sw_watchdog_msgs::msg::Heartbeat::SharedPtr msg) -> void {
+                    RCLCPP_INFO(get_logger(), "Watching %s, heartbeat sent at [%d.x]", hb_topic_name_.c_str(), msg->stamp.sec);
+                },
+                heartbeat_sub_options_);
+        }
+    }
+    else{
+        if(!heartbeat_sub_) {
+            heartbeat_sub_ = create_subscription<sw_watchdog_msgs::msg::Heartbeat>(
+                watchdogs_hb_topic_name_,
+                qos_profile_,
+                [this](const typename sw_watchdog_msgs::msg::Heartbeat::SharedPtr msg) -> void {
+                    RCLCPP_INFO(get_logger(), "Watching %s, heartbeat sent at [%d.x]", watchdogs_hb_topic_name_.c_str(), msg->stamp.sec);
+                },
+                heartbeat_sub_options_);
+        }
     }
 
     // Starting from this point, all messages are sent to the network.
-    if (enable_pub_)
-        status_pub_->on_activate();
+//     if (enable_pub_)
+    status_pub_->on_activate();
 
     // Starting from this point, all messages are sent to the network.
     RCUTILS_LOG_INFO_NAMED(get_name(), "on_activate() is called.");
@@ -153,9 +176,10 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn Lifecy
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn LifecycleWatchdog::on_deactivate(
     const rclcpp_lifecycle::State &)
 {
+
     heartbeat_sub_.reset(); // XXX there does not seem to be a 'deactivate' for subscribers.
     heartbeat_sub_ = nullptr;
-
+    
     // Starting from this point, all messages are no longer sent to the network.
     if(enable_pub_)
         status_pub_->on_deactivate();
@@ -168,9 +192,12 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn Lifecy
 /// Transition callback for state cleaningup
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn LifecycleWatchdog::on_cleanup(
     const rclcpp_lifecycle::State &)
-{
+{    
+    heartbeat_sub_.reset(); // XXX there does not seem to be a 'deactivate' for subscribers.
+    heartbeat_sub_ = nullptr;
+    
     status_pub_.reset();
-    RCUTILS_LOG_INFO_NAMED(get_name(), "on cleanup is called.");
+    RCUTILS_LOG_INFO_NAMED(get_name(), "on cleanup() is called.");
 
     return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
 }

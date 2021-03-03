@@ -50,15 +50,19 @@ public:
   rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn 
     on_shutdown(const rclcpp_lifecycle::State &state);
 
-private:
+private: 
+
     void timer_callback();
   
     std::shared_ptr<rclcpp_lifecycle::LifecyclePublisher<sw_watchdog_msgs::msg::Heartbeat>> publisher_ = nullptr;
     rclcpp::Subscription<sw_watchdog_msgs::msg::Status>::SharedPtr status_sub_ = nullptr;
+    rclcpp::Subscription<sw_watchdog_msgs::msg::Status>::SharedPtr subscription_ = nullptr;
     
     bool active_node_;
-    const std::string topic_name_;
+    const std::string heartbeat_topic_;
     const std::string wakeup_topic_;
+    const std::string wakeup_watchdog_topic_;
+    const std::string watchdog_heartbeat_topic_;
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::QoS qos_profile_;
     std::chrono::milliseconds heartbeat_period_;

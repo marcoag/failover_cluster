@@ -38,7 +38,7 @@ void print_usage()
  */
 LifecycleTalker::LifecycleTalker(const rclcpp::NodeOptions& options)
     : rclcpp_lifecycle::LifecycleNode("lifecycle_talker", options),
-        active_node_(false), count_(0), wakeup_topic_ ("status")
+        active_node_(false), count_(0), wakeup_topic_ ("status_hd")
 {
     declare_parameter("active_node");
     
@@ -82,10 +82,13 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn Lifecy
     
     status_sub_ = this->create_subscription<sw_watchdog_msgs::msg::Status>(
             wakeup_topic_,
-            1,
+            10,
             [this](const typename sw_watchdog_msgs::msg::Status::SharedPtr msg) -> void {
-                RCLCPP_INFO(get_logger(), "Watchdog raised, self activation triggered", msg->stamp.sec);
-                activate();
+                if(!active_node_)
+                {
+                    RCLCPP_INFO(get_logger(), "Watchdog raised, self activation triggered", msg->stamp.sec);
+                    activate();
+                }
             });
     
 

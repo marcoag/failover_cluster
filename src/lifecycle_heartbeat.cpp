@@ -18,7 +18,8 @@ using namespace std::chrono_literals;
 
 
 constexpr std::chrono::milliseconds LEASE_DELTA = 20ms; ///< Buffer added to heartbeat to define lease.
-constexpr char DEFAULT_TOPIC_NAME[] = "heartbeat";
+constexpr char DEFAULT_HEARTBEAT_NAME[] = "heartbeat";
+constexpr char DEFAULT_WATCHDOGS_HEARTBEAT_NAME[] = "watchdogs_heartbeat";
 
 namespace {
 
@@ -46,8 +47,9 @@ namespace lifecycle_heartbeat
  */
 LifecycleHeartbeat::LifecycleHeartbeat(const rclcpp::NodeOptions& options)
     : rclcpp_lifecycle::LifecycleNode("lifecycle_heartbeat", options),
-        active_node_(false), topic_name_(DEFAULT_TOPIC_NAME), qos_profile_(1),
-        wakeup_topic_ ("status")
+        active_node_(false), heartbeat_topic_(DEFAULT_HEARTBEAT_NAME), 
+        qos_profile_(1), wakeup_topic_ ("status_hd"),
+        watchdog_heartbeat_topic_(DEFAULT_WATCHDOGS_HEARTBEAT_NAME)
 {
     
     declare_parameter("heartbeat_period");
@@ -65,11 +67,7 @@ LifecycleHeartbeat::LifecycleHeartbeat(const rclcpp::NodeOptions& options)
     }
 
     configure();
-    
-    if(active_node_) {
-        RCLCPP_INFO(get_logger(), "Activation selected");
-        activate();
-    }
+    activate();
 }
 
 void LifecycleHeartbeat::timer_callback()
@@ -78,12 +76,12 @@ void LifecycleHeartbeat::timer_callback()
   auto message = sw_watchdog_msgs::msg::Heartbeat();
   rclcpp::Time now = this->get_clock()->now();
   message.stamp = now;
-  RCLCPP_INFO(this->get_logger(), "Publishing heartbeat, sent at [%f]", now.seconds());
+  RCLCPP_INFO(this->get_logger(), "Publishing heartbeat sent at [%f]",  now.seconds());
   publisher_->publish(message);
   
 }
 
-    /// Transition callback for state configuring
+/// Transition callback for state configuring
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn LifecycleHeartbeat::on_configure(
     const rclcpp_lifecycle::State &)
 {
@@ -92,16 +90,39 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn Lifecy
     .liveliness(RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC)
     .liveliness_lease_duration(heartbeat_period_ + LEASE_DELTA)
     .deadline(heartbeat_period_ + LEASE_DELTA);
-
-    publisher_ = this->create_publisher<sw_watchdog_msgs::msg::Heartbeat>("heartbeat", qos_profile_);
     
-    status_sub_ = this->create_subscription<sw_watchdog_msgs::msg::Status>(
-            wakeup_topic_,
-            1,
-            [this](const typename sw_watchdog_msgs::msg::Status::SharedPtr msg) -> void {
-                RCLCPP_INFO(get_logger(), "Watchdog raised, self activation triggered", msg->stamp.sec);
-                activate();
-            });
+    //publish on /heartbeat if active node otherwise publish on /watchdogs_heartbeat
+    if(active_node_)
+    {
+        publisher_ = this->create_publisher<sw_watchdog_msgs::msg::Heartbeat>(heartbeat_topic_, qos_profile_);
+    }
+    else
+    {
+        publisher_ = this->create_publisher<sw_watchdog_msgs::msg::Heartbeat>(watchdog_heartbeat_topic_, qos_profile_);
+    }
+
+    if(!status_sub_) {
+        status_sub_ = this->create_subscription<sw_watchdog_msgs::msg::Status>(
+
+                wakeup_topic_,
+                10,
+                [this](const typename sw_watchdog_msgs::msg::Status::SharedPtr msg) -> void {
+                    if(!active_node_)
+                    {
+                        RCLCPP_INFO(get_logger(), "Watchdog raised, self activation triggered", msg->stamp.sec);
+                        std::flush(std::cout);
+                        deactivate();
+                        cleanup();
+                        active_node_=!active_node_;
+                        configure();
+                        activate();
+                    }
+                    else
+                    {
+                        system("ros2 run failover_cluster linktime_composition --ros-args -p heartbeat_period:=200 -p watchdog_period:=300 -p active_node:=false -r lifecycle_heartbeat:__node:=hb_bkp -r lifecycle_watchdog:__node:=wd_bkp -r lifecycle_talker:__node:=talker_bkp&");
+                    }
+                });
+    }
 
     RCUTILS_LOG_INFO_NAMED(get_name(), "on_configure() is called.");
     return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
@@ -111,16 +132,19 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn Lifecy
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn LifecycleHeartbeat::on_activate(
     const rclcpp_lifecycle::State &)
 {
-    timer_ = this->create_wall_timer(heartbeat_period_, std::bind(&LifecycleHeartbeat::timer_callback, this));
-    publisher_->on_activate();
     
-    system("ros2 run failover_cluster linktime_composition --ros-args -p heartbeat_period:=200 -p watchdog_period:=220 -p active_node:=false&");
+    timer_ = this->create_wall_timer(heartbeat_period_, std::bind(&LifecycleHeartbeat::timer_callback, this));
+    
+    publisher_->on_activate();
+
+     //If it's the active_node start the watchdog node
+    if(active_node_)
+        system("ros2 run failover_cluster linktime_composition --ros-args -p heartbeat_period:=200 -p watchdog_period:=220 -p active_node:=false&");
 
     // Starting from this point, all messages are sent to the network.
     RCUTILS_LOG_INFO_NAMED(get_name(), "on_activate() is called.");
     return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
 }
-
  
 /// Transition callback for state deactivating
 rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn LifecycleHeartbeat::on_deactivate(
@@ -140,7 +164,8 @@ rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn Lifecy
     const rclcpp_lifecycle::State &)
 {
     publisher_.reset();
-    RCUTILS_LOG_INFO_NAMED(get_name(), "on cleanup is called.");
+    status_sub_.reset();
+    RCUTILS_LOG_INFO_NAMED(get_name(), "on cleanup() is called.");
 
     return rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn::SUCCESS;
 }
